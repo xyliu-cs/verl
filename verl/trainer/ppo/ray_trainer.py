@@ -41,6 +41,8 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from verl.utils.torch_functional import get_eos_mask
+from verl.utils.critique_utils import update_data_for_critique
+
 from torch.utils.data import RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
@@ -919,6 +921,10 @@ class RayPPOTrainer(object):
                 timing_raw = {}
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+                print('Before everything starts')
+                print('='*50)
+                print(f"batch: {batch}")
+                print('\n')
 
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
@@ -953,6 +959,12 @@ class RayPPOTrainer(object):
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
+
+                    print('='*50)
+                    print('After generate_sequences')
+                    print('='*50)
+                    print(f"batch: {batch}")
+                    print('\n')
 
                     with _timer('reward', timing_raw):
                         print("reward_fn start")
@@ -1005,6 +1017,64 @@ class RayPPOTrainer(object):
                         batch.batch['token_level_scores'] = reward_tensor
                         print(f"reward_fn end, time: {time.time() - start_time} seconds")
 
+                    print('='*50)
+                    print('After reward_fn')
+                    print('='*50)
+                    print(f"batch: {batch}")
+                    print('\n')
+                    
+                    batch_copy = batch.select(
+                        batch_keys=batch.batch.keys(),
+                        non_tensor_batch_keys=batch.non_tensor_batch.keys(),
+                        deepcopy=True
+                    )
+                    
+                    c_batch = batch_copy.downsampling(group_num=self.config.actor_rollout_ref.rollout.n, total_size=self.config.data.critique_batch_size)
+                    c_batch = update_data_for_critique(c_batch, tokenizer=self.tokenizer)
+                    c_gen_batch = c_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                    # generate a batch
+                    with _timer('gen', timing_raw):
+                        print("generate_critiques start")
+                        start_time = time.time()
+                        c_gen_batch_output = self.actor_rollout_wg.generate_sequences(c_gen_batch)
+                        end_time = time.time()
+                        print(f"generate_critiques end, time: {end_time - start_time} seconds")
+
+                    c_batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(c_batch.batch))],
+                                                             dtype=object) # based on random number, guarantee uniqueness
+
+                    # repeat to align with repeated responses in rollout
+                    c_batch = c_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    c_batch = c_batch.union(c_gen_batch_output)
+
+                    print('='*50)
+                    print('After generate_critiques')
+                    print('='*50)
+                    print(f"batch: {batch}")
+                    print('\n')
+
+                    with _timer('reward', timing_raw):
+                        print("reward_fn start")
+                        start_time = time.time()
+                        reward_tensor = self.reward_fn(c_batch)
+                        c_batch.batch['token_level_scores'] = reward_tensor
+                        print(f"reward_fn end, time: {time.time() - start_time} seconds")
+                    
+                    print('='*50)
+                    print('After reward_fn_critique')
+                    print('='*50)
+                    print(f"batch: {batch}")
+                    print('\n')
+
+                    # Leap of faith: we assume that the batch and c_batch have the same keys
+                    batch = DataProto.concat([batch, c_batch])
+
+                    print('='*50)
+                    print('After concatenate')
+                    print('='*50)
+                    print(f"batch: {batch}")
+                    print('\n')
+
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
@@ -1013,6 +1083,12 @@ class RayPPOTrainer(object):
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
+                    print('='*50)
+                    print('After _balance_batch')
+                    print('='*50)
+                    print(f"batch: {batch}")
+                    print('\n')
+                    
                     # recompute old_log_probs
                     with _timer('old_log_prob', timing_raw):
                         print("compute_log_prob start")
