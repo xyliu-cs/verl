@@ -105,8 +105,8 @@ def update_data_for_critique(data: DataProto, tokenizer, critique_prompt: str = 
         valid_response_ids_list, 
         skip_special_tokens=False,
     )
-    # print(f"Assistant decoded: {responses_decoded}")
     assistant_responses = [r.split("<|endoftext|>")[0].strip() for r in responses_decoded]
+    # print(f"Assistant responses: {assistant_responses[:2]}")
 
     # ====================== 2/4 Construct Critique Prompts ======================
     input_ids_list, mask_list, pos_ids_list = [], [], []
@@ -116,9 +116,9 @@ def update_data_for_critique(data: DataProto, tokenizer, critique_prompt: str = 
         formatted_prompt = critique_template.replace(
             "__special_original_question__", q
         ).replace(
-            "__special_original_response_", r
+            "__special_original_response__", r
         )
-        # print(formatted_prompt)
+        # print(formatted_prompt + '\n')
         chat_struct = [
             {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
             {"role": "user", "content": formatted_prompt}
