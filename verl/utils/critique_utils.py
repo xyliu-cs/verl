@@ -46,6 +46,25 @@ __special_original_response__
 Thoroughly analyze the response, identify any reasoning errors or format mismatches, and conclude with your final rating enclosed in \\boxed{} at the end.
 """
 
+CRITIQUE_PROMPT_2 = """Below are a question and a tentative solution. Think step by step to verify the answer and assign a final rating to the solution based on the following criteria:
+
+1. Missing final answer enclosed in \\boxed{} at the end: assign \\boxed{-1}.
+2. Correct response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{1}.
+3. Incorrect response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{-0.5}.
+    
+### Question ###
+__special_original_question__
+
+### Response ###
+__special_original_response__
+"""
+
+CRITIQUE_PROMPT_POOL = [
+    CRITIQUE_PROMPT,
+    CRITIQUE_PROMPT_2,
+    CRITIQUE_PROMPT_EXT,
+]
+
 def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[int]:
     # remove the left padding in the prompt token_id
     # pad_token_id = self.llm_engine.tokenizer.pad_token_id if self.llm_engine.tokenizer.pad_token_id is not None else self.llm_engine.tokenizer.eos_token_id
@@ -53,7 +72,8 @@ def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[in
     token_ids = prompt_token_ids[non_pad_index:].tolist()
     return token_ids
 
-def update_data_for_critique(data: DataProto, tokenizer, critique_prompt: str = CRITIQUE_PROMPT) -> DataProto:
+def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: int = 0) -> DataProto:
+    critique_prompt = CRITIQUE_PROMPT_POOL[critique_prompt_idx]
     required_batch_keys = {'input_ids', 'responses', 'attention_mask', 'prompts', 'token_level_scores'}
     if not all(k in data.batch for k in required_batch_keys):
         raise ValueError("Invalid DataProto structure")

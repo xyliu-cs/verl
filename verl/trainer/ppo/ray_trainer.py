@@ -1030,7 +1030,7 @@ class RayPPOTrainer(object):
                         )
                         
                         c_batch = batch_copy.downsampling(group_num=self.config.actor_rollout_ref.rollout.n, total_size=self.config.data.critique_batch_size)
-                        c_batch = update_data_for_critique(c_batch, tokenizer=self.tokenizer)
+                        c_batch = update_data_for_critique(c_batch, tokenizer=self.tokenizer, critique_prompt_idx=self.config.trainer.critique_prompt_idx)
                         c_gen_batch = c_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
                         
                         # generate a batch
