@@ -181,4 +181,5 @@ trainer:
   trajectory_injection: False
   trajectory_injection_threshold: -0.5
   trajectory_injection_reward: 1
+  critique_prompt_idx: 0
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
