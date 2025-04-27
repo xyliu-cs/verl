@@ -59,9 +59,19 @@ __special_original_question__
 __special_original_response__
 """
 
+CRITIQUE_PROMPT_3 = """Below are a question and a tentative solution. Think step by step to verify the correctness of the solution and assign a final rating at last. If the solution is correct, assign \\boxed{1}. If the solution is incorrect, assign \\boxed{-0.5}. If the solution is missing a final answer enclosed in \\boxed{} at the end, assign \\boxed{-1}.
+    
+### Question ###
+__special_original_question__
+
+### Solution ###
+__special_original_response__
+"""
+
 CRITIQUE_PROMPT_POOL = [
     CRITIQUE_PROMPT,
     CRITIQUE_PROMPT_2,
+    CRITIQUE_PROMPT_3,
     CRITIQUE_PROMPT_EXT,
 ]
 
