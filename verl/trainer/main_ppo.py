@@ -101,21 +101,30 @@ def main(config):
         reward_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(reward_module)
         compute_score = reward_module.reward_func
-        run_ppo(config, compute_score)
+        if config.reward_model.ver_reward_func_path is not None:
+            assert config.reward_model.ver_reward_func_path.endswith('.py'), "ver_reward_func_path must be a python file"
+            print(f"Loading custom verification reward function from {config.reward_model.ver_reward_func_path}")
+            vspec = importlib.util.spec_from_file_location("ver_reward_func", config.reward_model.ver_reward_func_path)
+            ver_reward_module = importlib.util.module_from_spec(vspec)
+            vspec.loader.exec_module(ver_reward_module)
+            compute_vscore = ver_reward_module.ver_reward_func
+            run_ppo(config, compute_score, compute_vscore)
+        else:
+            run_ppo(config, compute_score)
     else:
         run_ppo(config)
 
 
-def run_ppo(config, compute_score=None):
+def run_ppo(config, compute_score=None, compute_ver_score=None):
     if not ray.is_initialized():
         # this is for local ray cluster
         ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
 
-    ray.get(main_task.remote(config, compute_score))
+    ray.get(main_task.remote(config, compute_score, compute_ver_score))
 
 
 @ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
-def main_task(config, compute_score=None):
+def main_task(config, compute_score=None, compute_ver_score=None):
     from verl.utils.fs import copy_to_local
     # print initial config
     from pprint import pprint
@@ -196,6 +205,10 @@ def main_task(config, compute_score=None):
     else:
         raise NotImplementedError
     reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=0, compute_score=compute_score)
+    if compute_ver_score is None:
+        ver_reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=0, compute_score=compute_score)
+    else:
+        ver_reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=0, compute_score=compute_ver_score)
 
     # Note that we always use function-based RM for validation
     val_reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=1, compute_score=compute_score)
@@ -208,6 +221,7 @@ def main_task(config, compute_score=None):
                             resource_pool_manager=resource_pool_manager,
                             ray_worker_group_cls=ray_worker_group_cls,
                             reward_fn=reward_fn,
+                            ver_reward_fn=ver_reward_fn,
                             val_reward_fn=val_reward_fn)
     trainer.init_workers()
     trainer.fit()

@@ -362,6 +362,7 @@ class RayPPOTrainer(object):
                  resource_pool_manager: ResourcePoolManager,
                  ray_worker_group_cls: RayWorkerGroup = RayWorkerGroup,
                  reward_fn=None,
+                 ver_reward_fn=None,
                  val_reward_fn=None):
 
         # assert torch.cuda.is_available(), 'cuda must be available on driver'
@@ -369,6 +370,7 @@ class RayPPOTrainer(object):
         self.tokenizer = tokenizer
         self.config = config
         self.reward_fn = reward_fn
+        self.ver_reward_fn = ver_reward_fn
         self.val_reward_fn = val_reward_fn
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
@@ -1017,6 +1019,14 @@ class RayPPOTrainer(object):
                         batch.batch['token_level_scores'] = reward_tensor
                         print(f"reward_fn end, time: {time.time() - start_time} seconds")
 
+                    # NEW: generation-only metrics
+                    _gr = reward_tensor.sum(-1)                       # sequence reward
+                    metrics.update({
+                        'rewards/gen_mean': _gr.mean().item(),
+                        'rewards/gen_max' : _gr.max().item(),
+                        'rewards/gen_min' : _gr.min().item(),
+                    })
+
                     # print('='*50)
                     # print('After reward_fn')
                     # print('='*50)
@@ -1055,12 +1065,19 @@ class RayPPOTrainer(object):
                         # print('\n')
 
                         with _timer('reward', timing_raw):
-                            print("reward_fn start")
+                            print("ver_reward_fn start")
                             start_time = time.time()
-                            reward_tensor = self.reward_fn(c_batch)
+                            reward_tensor = self.ver_reward_fn(c_batch)
                             c_batch.batch['token_level_scores'] = reward_tensor
-                            print(f"reward_fn end, time: {time.time() - start_time} seconds")
-                        
+                            print(f"ver_reward_fn end, time: {time.time() - start_time} seconds")
+
+                        # NEW: verification-only metrics
+                        _vr = reward_tensor.sum(-1)
+                        metrics.update({
+                            'rewards/ver_mean': _vr.mean().item(),
+                            'rewards/ver_max' : _vr.max().item(),
+                            'rewards/ver_min' : _vr.min().item(),
+                        })
                         # print('='*50)
                         # print('After reward_fn_critique')
                         # print('='*50)
