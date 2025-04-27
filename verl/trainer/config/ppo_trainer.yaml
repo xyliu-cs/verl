@@ -147,6 +147,7 @@ reward_model:
   forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
   reward_manager: naive
   reward_func_path: null
+  ver_reward_func_path: null
 
 algorithm:
   gamma: 1.0
