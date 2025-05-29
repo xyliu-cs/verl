@@ -595,39 +595,12 @@ class DataProto:
             non_tensor_batch=repeated_non_tensor_batch,
             meta_info=self.meta_info,
         )
-    
-    # def __repr__(self):
-    #     """返回包含所有键值对信息的字符串表示"""
-    #     parts = []
-        
-    #     # 处理TensorDict batch
-    #     if self.batch is not None:
-    #         parts.append("Tensor Batch:")
-    #         for key in self.batch.keys():
-    #             tensor = self.batch[key]
-    #             parts.append(f"{key}: {type(tensor).__name__}(shape={tuple(tensor.shape)}, dtype={tensor.dtype})")
-        
-    #     # 处理非张量batch
-    #     if self.non_tensor_batch:
-    #         parts.append("\nNon-Tensor Batch:")
-    #         for key, val in self.non_tensor_batch.items():
-    #             parts.append(f"{key}: {type(val).__name__}(shape={val.shape}, dtype={val.dtype})")
-        
-    #     # 处理元信息
-    #     if self.meta_info:
-    #         parts.append("\nMeta Info:")
-    #         for key, val in self.meta_info.items():
-    #             parts.append(f"{key}: {type(val).__name__}({repr(val) if len(str(val)) < 50 else '...'})")
-        
-    #     return "\n".join(parts)
 
     def __repr__(self):
-        """增强版对象表示，显示前3个非张量数据样本"""
-        MAX_SAMPLES = 3  # 控制显示样本数
-        
+        MAX_SAMPLES = 3
         parts = ["DataProto Summary:"]
         
-        # 处理 Tensor Batch
+        # Tensor Batch
         if self.batch is not None:
             parts.append("Tensor Batch:")
             for key, tensor in self.batch.items():
@@ -635,31 +608,26 @@ class DataProto:
                 dtype = str(tensor.dtype).split(".")[-1]
                 parts.append(f"  ├─ {key}: {dtype}{shape}")
 
-        # 处理 Non-Tensor Batch（核心修改部分）
+        # Non-Tensor Batch
         if self.non_tensor_batch:
             parts.append("\nNon-Tensor Batch:")
             for key, arr in self.non_tensor_batch.items():
-                # 获取前3个样本的字符串表示
                 sample_strs = []
                 for i in range(min(MAX_SAMPLES, len(arr))):
                     sample = arr[i]
-                    
-                    # 处理不同数据类型
                     if isinstance(sample, (str, bytes)):
-                        sample_repr = f"'{sample}'"  # 字符串加引号
+                        sample_repr = f"'{sample}'"  
                     elif isinstance(sample, np.ndarray):
-                        sample_repr = f"array(shape={sample.shape})"  # 数组显示形状
+                        sample_repr = f"array(shape={sample.shape})"
                     else:
                         sample_repr = repr(sample)[:50] + "..." if len(repr(sample)) > 50 else repr(sample)
                     
                     sample_strs.append(f"[{i}]: {sample_repr}")
                 
-                # 拼接样本信息
                 sample_info = " | ".join(sample_strs)
                 if len(arr) > MAX_SAMPLES:
                     sample_info += f" ... (+{len(arr)-MAX_SAMPLES} more)"
                 
-                # 添加类型信息
                 dtype = arr.dtype
                 shape = arr.shape
                 parts.append(
@@ -667,7 +635,7 @@ class DataProto:
                     f"  │     Samples → {sample_info}"
                 )
 
-        # 处理 Meta Info
+        # Meta Info
         if self.meta_info:
             parts.append("\n🔖 Meta Info:")
             for k, v in self.meta_info.items():
@@ -677,63 +645,63 @@ class DataProto:
         return "\n".join(parts)
 
 
-    def downsampling(self, group_num: int, total_size: int) -> 'DataProto':
-        """
-        下采样方法实现
-        
-        参数说明：
-        group_num  : 每组的基础尺寸（最后一组可能更小）
-        total_size : 最终需要保留的总样本数
-        
-        返回新创建的DataProto实例
-        """
-        # 参数校验
-        if group_num <= 0:
-            raise ValueError(f"Invalid group_num: {group_num}, must be positive")
-        if total_size <= 0:
-            raise ValueError(f"Invalid total_size: {total_size}, must be positive")
+def downsampling(self, group_num: int, total_size: int) -> 'DataProto':
+    """
+    Downsampling method implementation
+    
+    Parameter description:
+    group_num  : Base size of each group (the last group may be smaller)
+    total_size : Total number of samples to retain
+    
+    Returns a newly created instance of DataProto
+    """
+    # Parameter validation
+    if group_num <= 0:
+        raise ValueError(f"Invalid group_num: {group_num}, must be positive")
+    if total_size <= 0:
+        raise ValueError(f"Invalid total_size: {total_size}, must be positive")
 
-        # 获取当前数据总量
-        current_size = self.batch.shape[0]
-        if current_size < total_size:
-            raise ValueError(f"Can't downsample {current_size} entries to {total_size}")
+    # Get the total current data size
+    current_size = self.batch.shape[0]
+    if current_size < total_size:
+        raise ValueError(f"Can't downsample {current_size} entries to {total_size}")
 
-        # 核心算法步骤
-        group_count = math.ceil(current_size / group_num)  # 计算总组数
-        base_per_group, extra_groups = divmod(total_size, group_count)  # 计算每组基础保留数
-        
-        # 生成保留索引
-        selected_indices = []
-        for group_idx in range(group_count):
-            # 计算当前组保留数量
-            retain_num = base_per_group + 1 if group_idx < extra_groups else base_per_group
-            
-            # 确定当前组的索引范围
-            start = group_idx * group_num
-            end = min(start + group_num, current_size)
-            group_entries = end - start
-            
-            # 随机选择并排序
-            if retain_num > group_entries:
-                raise RuntimeError(f"Group {group_idx} has {group_entries} entries, "
-                                 f"but required to retain {retain_num}")
-            indices = np.arange(start, end)
-            chosen = np.random.choice(indices, retain_num, replace=False)
-            chosen.sort()
-            selected_indices.extend(chosen.tolist())
+    # Core algorithm steps
+    group_count = math.ceil(current_size / group_num)  # Calculate total number of groups
+    base_per_group, extra_groups = divmod(total_size, group_count)  # Calculate base retention per group
 
-        # 构建新数据
-        new_batch = self.batch[selected_indices] if self.batch is not None else None
-        new_non_tensor = {
-            k: v[selected_indices] 
-            for k, v in self.non_tensor_batch.items()
-        }
+    # Generate indices to retain
+    selected_indices = []
+    for group_idx in range(group_count):
+        # Calculate how many entries to retain for the current group
+        retain_num = base_per_group + 1 if group_idx < extra_groups else base_per_group
 
-        return DataProto(
-            batch=new_batch,
-            non_tensor_batch=new_non_tensor,
-            meta_info=self.meta_info.copy()  # 浅拷贝元信息
-        )
+        # Determine index range for the current group
+        start = group_idx * group_num
+        end = min(start + group_num, current_size)
+        group_entries = end - start
+
+        # Randomly select and sort
+        if retain_num > group_entries:
+            raise RuntimeError(f"Group {group_idx} has {group_entries} entries, "
+                               f"but required to retain {retain_num}")
+        indices = np.arange(start, end)
+        chosen = np.random.choice(indices, retain_num, replace=False)
+        chosen.sort()
+        selected_indices.extend(chosen.tolist())
+
+    # Construct new data
+    new_batch = self.batch[selected_indices] if self.batch is not None else None
+    new_non_tensor = {
+        k: v[selected_indices] 
+        for k, v in self.non_tensor_batch.items()
+    }
+
+    return DataProto(
+        batch=new_batch,
+        non_tensor_batch=new_non_tensor,
+        meta_info=self.meta_info.copy()  # Shallow copy of meta information
+    )
 
 import ray
 
