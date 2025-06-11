@@ -59,6 +59,7 @@ from verl.utils.metric import (
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+from verl.utils.critique_utils import update_data_for_critique
 from verl.workers.rollout.async_server import AsyncLLMServerManager
 
 WorkerType = Type[Worker]
@@ -360,6 +361,7 @@ class RayPPOTrainer:
         ray_worker_group_cls: RayWorkerGroup = RayWorkerGroup,
         processor=None,
         reward_fn=None,
+        ver_reward_fn=None,
         val_reward_fn=None,
         train_dataset: Optional[Dataset] = None,
         val_dataset: Optional[Dataset] = None,
@@ -373,6 +375,7 @@ class RayPPOTrainer:
         self.processor = processor
         self.config = config
         self.reward_fn = reward_fn
+        self.ver_reward_fn = ver_reward_fn
         self.val_reward_fn = val_reward_fn
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
@@ -987,6 +990,10 @@ class RayPPOTrainer:
                 metrics = {}
                 timing_raw = {}
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+                # print('Before everything starts')
+                # print('='*50)
+                # print(f"batch: {batch}")
+                # print('\n')
 
                 # pop those keys for generation
                 batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
@@ -1036,16 +1043,11 @@ class RayPPOTrainer:
                     batch = batch.union(gen_batch_output)
 
                     batch.batch["response_mask"] = compute_response_mask(batch)
-                    # Balance the number of valid tokens across DP ranks.
-                    # NOTE: This usually changes the order of data in the `batch`,
-                    # which won't affect the advantage calculation (since it's based on uid),
-                    # but might affect the loss calculation (due to the change of mini-batching).
-                    # TODO: Decouple the DP balancing and mini-batching.
-                    if self.config.trainer.balance_batch:
-                        self._balance_batch(batch, metrics=metrics)
-
-                    # compute global_valid tokens
-                    batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+                    # print('='*50)
+                    # print('After generate_sequences')
+                    # print('='*50)
+                    # print(f"batch: {batch}")
+                    # print('\n')
 
                     with _timer("reward", timing_raw):
                         # compute reward model score
@@ -1057,6 +1059,95 @@ class RayPPOTrainer:
                             future_reward = compute_reward_async.remote(batch, self.config, self.tokenizer)
                         else:
                             reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+
+                    # print('='*50)
+                    # print('After reward_fn')
+                    # print('='*50)
+                    # print(f"batch: {batch}")
+                    # print('\n')
+
+                    # Self-verification pipeline
+                    if self.config.trainer.online_critique:
+                        # retrieve the (async) reward for update ground-truth for verification
+                        if self.config.reward_model.launch_reward_fn_async:            # fetch
+                            reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
+                        batch.batch["token_level_scores"] = reward_tensor
+                        if reward_extra_infos_dict:
+                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                        
+                        # set the verification batch
+                        batch_copy = batch.select(
+                            batch_keys=batch.batch.keys(),
+                            non_tensor_batch_keys=batch.non_tensor_batch.keys(),
+                            deepcopy=True
+                        )
+                        c_batch = batch_copy.downsampling(group_num=self.config.actor_rollout_ref.rollout.n, total_size=self.config.data.critique_batch_size)
+                        c_batch = update_data_for_critique(c_batch, tokenizer=self.tokenizer, critique_prompt_idx=self.config.trainer.critique_prompt_idx)
+                        c_gen_batch = c_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+
+                        # generate a batch
+                        with _timer("gen", timing_raw):
+                            if not self.async_rollout_mode:
+                                c_gen_batch_output = self.actor_rollout_wg.generate_sequences(c_gen_batch)
+                            else:
+                                self.async_rollout_manager.wake_up()
+                                c_gen_batch_output = self.async_rollout_manager.generate_sequences(c_gen_batch)
+                                self.async_rollout_manager.sleep()
+
+                        c_batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(c_batch.batch))], dtype=object) # based on random number, guarantee uniqueness
+                        # repeat to align with repeated responses in rollout
+                        c_batch = c_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                        c_batch = c_batch.union(c_gen_batch_output)
+                        c_batch.batch["response_mask"] = compute_response_mask(c_batch)
+                        # print('='*50)
+                        # print('After generate_verification')
+                        # print('='*50)
+                        # print(f"batch: {batch}")
+                        # print('\n')
+
+                        # verification reward
+                        with _timer("reward", timing_raw):
+                            # compute reward model score
+                            if self.use_rm:
+                                c_reward_tensor = self.rm_wg.compute_rm_score(c_batch)
+                                c_batch = c_batch.union(c_reward_tensor)
+
+                            if self.config.reward_model.launch_reward_fn_async:
+                                c_future_reward = compute_reward_async.remote(c_batch, self.config, self.tokenizer)
+                            else:
+                                c_reward_tensor, c_reward_extra_infos_dict = compute_reward(c_batch, self.ver_reward_fn)
+
+                        # print('='*50)
+                        # print('After reward_fn_verification')
+                        # print('='*50)
+                        # print(f"batch: {batch}")
+                        # print('\n')
+
+                        # Unfortunately, we need to retrieve the reward for verification immediately
+                        if self.config.reward_model.launch_reward_fn_async:
+                            c_reward_tensor, c_reward_extra_infos_dict = ray.get(c_future_reward)
+                        c_batch.batch["token_level_scores"] = c_reward_tensor
+                        if c_reward_extra_infos_dict:
+                            c_batch.non_tensor_batch.update({k: np.array(v) for k, v in c_reward_extra_infos_dict.items()})
+
+                        batch = DataProto.concat([batch, c_batch])
+
+                        # print('='*50)
+                        # print('After concatenate')
+                        # print('='*50)
+                        # print(f"batch: {batch}")
+                        # print('\n')
+
+                    # compute global_valid tokens
+                    batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+
+                    # Balance the number of valid tokens across DP ranks.
+                    # NOTE: This usually changes the order of data in the `batch`,
+                    # which won't affect the advantage calculation (since it's based on uid),
+                    # but might affect the loss calculation (due to the change of mini-batching).
+                    # TODO: Decouple the DP balancing and mini-batching.
+                    if self.config.trainer.balance_batch:
+                        self._balance_batch(batch, metrics=metrics)
 
                     # recompute old_log_probs
                     with _timer("old_log_prob", timing_raw):
@@ -1111,14 +1202,15 @@ class RayPPOTrainer:
 
                     with _timer("adv", timing_raw):
                         # we combine with rule-based rm
-                        reward_extra_infos_dict: dict[str, list]
-                        if self.config.reward_model.launch_reward_fn_async:
-                            reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
-                        batch.batch["token_level_scores"] = reward_tensor
+                        if not self.config.trainer.online_critique: # otherwise, we already set the reward in the batch
+                            reward_extra_infos_dict: dict[str, list]
+                            if self.config.reward_model.launch_reward_fn_async:
+                                reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
+                            batch.batch["token_level_scores"] = reward_tensor
 
-                        print(f"{list(reward_extra_infos_dict.keys())=}")
-                        if reward_extra_infos_dict:
-                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                            print(f"{list(reward_extra_infos_dict.keys())=}")
+                            if reward_extra_infos_dict:
+                                batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:

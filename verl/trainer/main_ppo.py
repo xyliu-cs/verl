@@ -133,6 +133,10 @@ class TaskRunner:
 
         reward_fn = load_reward_manager(config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {}))
         val_reward_fn = load_reward_manager(config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {}))
+        if config.custom_ver_reward_function.path is not None: # custom verification reward function set
+            ver_reward_fn = load_reward_manager(config, tokenizer, num_examine=0, reward_key="custom_ver_reward_function", **config.reward_model.get("reward_kwargs", {}))
+        else:
+            ver_reward_fn = reward_fn
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
         from verl.utils.dataset.rl_dataset import collate_fn
@@ -148,6 +152,7 @@ class TaskRunner:
             resource_pool_manager=resource_pool_manager,
             ray_worker_group_cls=ray_worker_group_cls,
             reward_fn=reward_fn,
+            ver_reward_fn=ver_reward_fn,
             val_reward_fn=val_reward_fn,
             train_dataset=train_dataset,
             val_dataset=val_dataset,

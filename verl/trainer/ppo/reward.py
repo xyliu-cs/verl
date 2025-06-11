@@ -22,11 +22,11 @@ from verl import DataProto
 from verl.utils.reward_score import default_compute_score
 
 
-def get_custom_reward_fn(config):
+def get_custom_reward_fn(config, reward_key):
     import importlib.util
     import sys
 
-    reward_fn_config = config.get("custom_reward_function") or {}
+    reward_fn_config = config.get(reward_key) or {}
     file_path = reward_fn_config.get("path")
     if not file_path:
         return None
@@ -57,7 +57,7 @@ def get_custom_reward_fn(config):
     return wrapped_fn
 
 
-def load_reward_manager(config, tokenizer, num_examine, **reward_kwargs):
+def load_reward_manager(config, tokenizer, num_examine, reward_key="custom_reward_function", **reward_kwargs):
     reward_manager_name = config.reward_model.get("reward_manager", "naive")
     if reward_manager_name == "naive":
         from verl.workers.reward_manager import NaiveRewardManager
@@ -78,7 +78,7 @@ def load_reward_manager(config, tokenizer, num_examine, **reward_kwargs):
     else:
         raise NotImplementedError
 
-    compute_score = get_custom_reward_fn(config)
+    compute_score = get_custom_reward_fn(config, reward_key=reward_key)
     final_compute_score = compute_score
 
     if compute_score is None:

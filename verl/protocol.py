@@ -23,6 +23,7 @@ import os
 import pickle
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Union
+import math
 
 import numpy as np
 import pandas as pd
@@ -835,6 +836,113 @@ class DataProto:
             batch=repeated_batch,
             non_tensor_batch=repeated_non_tensor_batch,
             meta_info=self.meta_info,
+        )
+
+    def __repr__(self):
+        MAX_SAMPLES = 3
+        parts = ["DataProto Summary:"]
+
+        # Tensor Batch
+        if self.batch is not None:
+            parts.append("Tensor Batch:")
+            for key, tensor in self.batch.items():
+                shape = tuple(tensor.shape)
+                dtype = str(tensor.dtype).split(".")[-1]
+                parts.append(f"  ├─ {key}: {dtype}{shape}")
+
+        # Non-Tensor Batch
+        if self.non_tensor_batch:
+            parts.append("\nNon-Tensor Batch:")
+            for key, arr in self.non_tensor_batch.items():
+                sample_strs = []
+                for i in range(min(MAX_SAMPLES, len(arr))):
+                    sample = arr[i]
+                    if isinstance(sample, (str, bytes)):
+                        sample_repr = f"'{sample}'"  
+                    elif isinstance(sample, np.ndarray):
+                        sample_repr = f"array(shape={sample.shape})"
+                    else:
+                        sample_repr = repr(sample)[:50] + "..." if len(repr(sample)) > 50 else repr(sample)
+
+                    sample_strs.append(f"[{i}]: {sample_repr}")
+
+                sample_info = " | ".join(sample_strs)
+                if len(arr) > MAX_SAMPLES:
+                    sample_info += f" ... (+{len(arr)-MAX_SAMPLES} more)"
+
+                dtype = arr.dtype
+                shape = arr.shape
+                parts.append(
+                    f"  ├─ {key}: {dtype}{shape}\n"
+                    f"  │     Samples → {sample_info}"
+                )
+
+        # Meta Info
+        if self.meta_info:
+            parts.append("\n🔖 Meta Info:")
+            for k, v in self.meta_info.items():
+                val_str = str(v)[:50] + "..." if len(str(v)) > 50 else str(v)
+                parts.append(f"  ├─ {k}: {type(v).__name__}({val_str})")
+
+        return "\n".join(parts)
+
+
+    def downsampling(self, group_num: int, total_size: int) -> 'DataProto':
+        """
+        Downsampling method implementation
+        
+        Parameter description:
+        group_num  : Base size of each group (the last group may be smaller)
+        total_size : Total number of samples to retain
+        
+        Returns a newly created instance of DataProto
+        """
+        # Parameter validation
+        if group_num <= 0:
+            raise ValueError(f"Invalid group_num: {group_num}, must be positive")
+        if total_size <= 0:
+            raise ValueError(f"Invalid total_size: {total_size}, must be positive")
+
+        # Get the total current data size
+        current_size = self.batch.shape[0]
+        if current_size < total_size:
+            raise ValueError(f"Can't downsample {current_size} entries to {total_size}")
+
+        # Core algorithm steps
+        group_count = math.ceil(current_size / group_num)  # Calculate total number of groups
+        base_per_group, extra_groups = divmod(total_size, group_count)  # Calculate base retention per group
+
+        # Generate indices to retain
+        selected_indices = []
+        for group_idx in range(group_count):
+            # Calculate how many entries to retain for the current group
+            retain_num = base_per_group + 1 if group_idx < extra_groups else base_per_group
+
+            # Determine index range for the current group
+            start = group_idx * group_num
+            end = min(start + group_num, current_size)
+            group_entries = end - start
+
+            # Randomly select and sort
+            if retain_num > group_entries:
+                raise RuntimeError(f"Group {group_idx} has {group_entries} entries, "
+                                f"but required to retain {retain_num}")
+            indices = np.arange(start, end)
+            chosen = np.random.choice(indices, retain_num, replace=False)
+            chosen.sort()
+            selected_indices.extend(chosen.tolist())
+
+        # Construct new data
+        new_batch = self.batch[selected_indices] if self.batch is not None else None
+        new_non_tensor = {
+            k: v[selected_indices] 
+            for k, v in self.non_tensor_batch.items()
+        }
+
+        return DataProto(
+            batch=new_batch,
+            non_tensor_batch=new_non_tensor,
+            meta_info=self.meta_info.copy()  # Shallow copy of meta information
         )
 
 

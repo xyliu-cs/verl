@@ -22,6 +22,7 @@ data:
   custom_cls:
       path: null
       name: null
+  qwen3_thinking: True # if False, the thinking mode will be disabled
 
 actor_rollout_ref:
   hybrid_engine: True
@@ -225,6 +226,9 @@ reward_model:
 custom_reward_function:
   path: null
   name: compute_score
+custom_ver_reward_function:
+  path: null
+  name: compute_score
 
 algorithm:
   gamma: 1.0
@@ -242,6 +246,7 @@ algorithm:
   pf_ppo:
     reweight_method: pow  # ["pow", "max_min", "max_random"]
     weight_pow: 2.0
+  critique_prompt_idx: 0
 
 trainer:
   balance_batch: True
@@ -270,6 +275,7 @@ trainer:
   # The timeout for ray worker group to wait for the register center to be ready
   ray_wait_register_center_timeout: 300
   device: cuda
+  critique_prompt_idx: 0
 
 ray_init:
   num_cpus: null # `None` means using all CPUs, which might cause hang if limited in systems like SLURM. Please set to a number allowed then.

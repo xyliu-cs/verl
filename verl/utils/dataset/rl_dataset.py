@@ -115,6 +115,7 @@ class RLHFDataset(Dataset):
         self.need_tools_kwargs = config.get("need_tools_kwargs", False)
         self.filter_prompts = config.get("filter_prompts", True)
         self.serialize_dataset = False
+        self.enable_qwen3_thinking = config.get("qwen3_thinking", True)
         self._download()
         self._read_files_and_tokenize()
 
@@ -218,7 +219,10 @@ class RLHFDataset(Dataset):
             row_dict["multi_modal_inputs"].pop("second_per_grid_ts", None)
 
         else:
-            raw_prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+            if not self.enable_qwen3_thinking:
+                raw_prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
+            else:
+                raw_prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
             model_inputs = self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)
             input_ids = model_inputs.pop("input_ids")
             attention_mask = model_inputs.pop("attention_mask")
@@ -294,3 +298,12 @@ class RLHFDataset(Dataset):
             return state
 
         return self.__dict__.copy()
+
+    def __setstate__(self, state):
+        """
+        Re-hydrate the dataset inside DataLoader workers.
+        """
+        self.__dict__.update(state)
+        # If the dataframe was stripped to save RAM, rebuild it now.
+        if "dataframe" not in state:
+            self.resume_dataset_state()   # downloads + tokenize again
