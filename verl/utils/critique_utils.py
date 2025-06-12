@@ -19,7 +19,7 @@ def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[in
 
 
 def extract_content_in_between(decoded_text: List[str], start_tag: Optional[str] = None, end_tag: Optional[str] = None) -> List[str]:
-    # normalise “missing tag” → None  (so we can test with `is None`)
+    # normalise "missing tag" → None  (so we can test with `is None`)
     start_tag = start_tag or None
     end_tag   = end_tag   or None
 
@@ -32,9 +32,10 @@ def extract_content_in_between(decoded_text: List[str], start_tag: Optional[str]
         pattern = r"^(.*?)" + re.escape(end_tag)
     else: # no tags at all → whole string
         return [t.strip() for t in decoded_text]
-    # Apply the search per string (first match only)
+    
+    # Apply the search per string (first match only), fallback to full text if no match
     return [
-        (m.group(1).strip() if (m := re.search(pattern, t, re.DOTALL)) else "")
+        (m.group(1).strip() if (m := re.search(pattern, t, re.DOTALL)) else t.strip())
         for t in decoded_text
     ]
 
