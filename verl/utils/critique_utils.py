@@ -1,79 +1,14 @@
 from verl import DataProto
 import torch
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
 import numpy as np
 import copy
 from tensordict import TensorDict
+from verl.utils.critique_templates import CRITIQUE_PROMPT_POOL, QWEN_MATH_SYSTEM_PROMPT, USER_START_TAG, USER_END_TAG, ASSISTANT_START_TAG, ASSISTANT_END_TAG
 
-CRITIQUE_PROMPT = """Below you are presented with a question and a tentative response. Your task is to evaluate and assign a rating to the response based on the following clear criteria:
-
-Rating Criteria:
-
-1. Missing final answer enclosed in \\boxed{} at the end: assign \\boxed{-1}.
-2. Correct response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{1}.
-3. Incorrect response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{-0.5}.
-
-### Question Begin ###
-__special_original_question__
-### Question End ###
-
-### Response Begin ###
-__special_original_response__
-### Response End ###
-
-Briefly summarize your analysis, then clearly state your final rating value enclosed in \\boxed{} at the end.
-"""
-
-CRITIQUE_PROMPT_EXT = """Below you are presented with a question and a tentative response. Your task is to evaluate and assign a rating to the response based on the following clear criteria:
-
-Rating Criteria:
-
-1. Missing final answer enclosed in \\boxed{} at the end: assign \\boxed{-1}.
-2. Correct response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{1}.
-3. Incorrect response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{-0.5}.
-
-### Question Begin ###
-__special_original_question__
-### Question End ###
-
-### Response Begin ###
-__special_original_response__
-### Response End ###
-
-Thoroughly analyze the response, identify any reasoning errors or format mismatches, and conclude with your final rating enclosed in \\boxed{} at the end.
-"""
-
-CRITIQUE_PROMPT_2 = """Below are a question and a tentative solution. Think step by step to verify the answer and assign a final rating to the solution based on the following criteria:
-
-1. Missing final answer enclosed in \\boxed{} at the end: assign \\boxed{-1}.
-2. Correct response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{1}.
-3. Incorrect response with the final answer enclosed in \\boxed{} at the end: assign \\boxed{-0.5}.
-    
-### Question ###
-__special_original_question__
-
-### Response ###
-__special_original_response__
-"""
-
-CRITIQUE_PROMPT_3 = """Below are a question and a tentative solution. Think step by step to verify the correctness of the solution and assign a final rating at last. If the solution is correct, assign \\boxed{1}. If the solution is incorrect, assign \\boxed{-0.5}. If the solution is missing a final answer enclosed in \\boxed{} at the end, assign \\boxed{-1}.
-    
-### Question ###
-__special_original_question__
-
-### Solution ###
-__special_original_response__
-"""
-
-CRITIQUE_PROMPT_POOL = [
-    CRITIQUE_PROMPT,
-    CRITIQUE_PROMPT_2,
-    CRITIQUE_PROMPT_3,
-    CRITIQUE_PROMPT_EXT,
-]
 
 def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[int]:
     # remove the left padding in the prompt token_id
@@ -82,7 +17,29 @@ def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[in
     token_ids = prompt_token_ids[non_pad_index:].tolist()
     return token_ids
 
-def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: int = 0) -> DataProto:
+
+def extract_content_in_between(decoded_text: List[str], start_tag: Optional[str] = None, end_tag: Optional[str] = None) -> List[str]:
+    # normalise "missing tag" → None  (so we can test with `is None`)
+    start_tag = start_tag or None
+    end_tag   = end_tag   or None
+
+    # Build the pattern according to which tags are present
+    if start_tag and end_tag:
+        pattern = (re.escape(start_tag) + r"(.*?)" + re.escape(end_tag))
+    elif start_tag and not end_tag:
+        pattern = re.escape(start_tag) + r"(.*)$"
+    elif not start_tag and end_tag:
+        pattern = r"^(.*?)" + re.escape(end_tag)
+    else: # no tags at all → whole string
+        return [t.strip() for t in decoded_text]
+    
+    # Apply the search per string (first match only), fallback to full text if no match
+    return [
+        (m.group(1).strip() if (m := re.search(pattern, t, re.DOTALL)) else t.strip())
+        for t in decoded_text
+    ]
+
+def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: int = 0, critique_system_prompt: str = QWEN_MATH_SYSTEM_PROMPT) -> DataProto:
     critique_prompt = CRITIQUE_PROMPT_POOL[critique_prompt_idx]
     required_batch_keys = {'input_ids', 'responses', 'attention_mask', 'prompts', 'token_level_scores'}
     if not all(k in data.batch for k in required_batch_keys):
@@ -99,24 +56,19 @@ def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: in
     eos_token_id = tokenizer.eos_token_id
     pad_token_id = tokenizer.pad_token_id
     prompt_length = prompt_ids.shape[-1] # max length of the prompt (input_ids)
-
-    def _extract_content(tensor: torch.Tensor, start_tag: str, end_tag: str) -> list:
-        decoded = tokenizer.batch_decode(tensor, skip_special_tokens=False)
-        # print(f"Decoded: {decoded}")
-        pattern = re.escape(start_tag) + r"(.*?)" + re.escape(end_tag)
-        return [m.group(1).strip() if (m:=re.search(pattern,t,re.DOTALL)) else "" for t in decoded]
     
     # ====================== 1/4 Extract User & Assistant Content ======================
     # 1. Extract User Queries
-    processed_tokens = [
+    processed_prompts = [
         _pre_process_inputs(pad_token_id, row_ids)
         for row_ids in prompt_ids
     ]
-    user_queries = _extract_content(
-        processed_tokens, 
-        "<|im_start|>user\n", 
-        "<|im_end|>"
+    
+    decoded_prompts = tokenizer.batch_decode(
+        processed_prompts,
+        skip_special_tokens=False
     )
+    user_queries = extract_content_in_between(decoded_prompts, USER_START_TAG, USER_END_TAG)
     # print(f"User queries: {user_queries}")
     
     # 2. Extract Assistant Responses
@@ -125,18 +77,17 @@ def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: in
     
     # process logic based on reward_manager naive.py _call_reward()
     for i in range(batch_size):
-        single_mask = attention_mask[i]  # 当前样本的attention_mask
+        single_mask = attention_mask[i]
         valid_length = single_mask[prompt_length:].sum().item()
-        
         valid_tokens = response_ids[i, :valid_length]
         valid_response_ids_list.append(valid_tokens)
 
-    responses_decoded = tokenizer.batch_decode(
+    decoded_responses = tokenizer.batch_decode(
         valid_response_ids_list, 
         skip_special_tokens=False,
     )
-    assistant_responses = [r.split("<|endoftext|>")[0].strip() for r in responses_decoded]
-    # print(f"Assistant responses: {assistant_responses[:2]}")
+    # Again, we start from the beginning as the assistant's start_tag is included in the prompt not generation
+    assistant_responses = extract_content_in_between(decoded_responses, start_tag=ASSISTANT_START_TAG, end_tag=ASSISTANT_END_TAG)
 
     # ====================== 2/4 Construct Critique Prompts ======================
     input_ids_list, mask_list, pos_ids_list = [], [], []
@@ -150,7 +101,7 @@ def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: in
         )
         # print(formatted_prompt + '\n')
         chat_struct = [
-            {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
+            {"role": "system", "content": critique_system_prompt},
             {"role": "user", "content": formatted_prompt}
         ]
         
@@ -171,7 +122,7 @@ def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: in
         )
         pos_ids = compute_position_id_with_mask(mask)
 
-        input_ids_list.append(ids[0].to(device))  # 保持设备一致性
+        input_ids_list.append(ids[0].to(device))
         mask_list.append(mask[0].to(device))
         pos_ids_list.append(pos_ids[0].to(device))
 
