@@ -31,13 +31,32 @@ def extract_content_in_between(decoded_text: List[str], start_tag: Optional[str]
     elif not start_tag and end_tag:
         pattern = r"^(.*?)" + re.escape(end_tag)
     else: # no tags at all → whole string
-        return [t.strip() for t in decoded_text]
+        pattern = r"^(.*)$"  # dummy pattern to capture the whole string
     
-    # Apply the search per string (first match only), fallback to full text if no match
-    return [
-        (m.group(1).strip() if (m := re.search(pattern, t, re.DOTALL)) else t.strip())
-        for t in decoded_text
-    ]
+    # Apply the search per string, with fallback logic
+    results = []
+    for t in decoded_text:
+        if start_tag and end_tag:
+            # Try to find both tags first
+            m = re.search(pattern, t, re.DOTALL)
+            if m:
+                results.append(m.group(1).strip())
+            else:
+                # Fallback: if only start_tag exists, extract from start_tag to end
+                start_only_pattern = re.escape(start_tag) + r"(.*)$"
+                m_start = re.search(start_only_pattern, t, re.DOTALL)
+                if m_start:
+                    results.append(m_start.group(1).strip())
+                # No tag found, just append the original text
+                else:
+                    results.append(t.strip())
+        else:
+            # Single tag or no tag cases
+            m = re.search(pattern, t, re.DOTALL)
+            results.append(m.group(1).strip() if m else t.strip())
+    
+    return results
+
 
 def update_data_for_critique(data: DataProto, tokenizer, critique_prompt_idx: int = 0, critique_system_prompt: str = QWEN_MATH_SYSTEM_PROMPT) -> DataProto:
     critique_prompt = CRITIQUE_PROMPT_POOL[critique_prompt_idx]
